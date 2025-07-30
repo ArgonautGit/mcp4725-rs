@@ -55,7 +55,7 @@ async fn main(spawner: Spawner) {
         mcp.set_voltage(x.sin() * 1.65 + 1.65).await.unwrap();
         mcp.get_voltage().await.unwrap();
         x += 0.2;
-        Timer::after_millis(500).await;
+        Timer::after_millis(10).await;
     }
 }
 
