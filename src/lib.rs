@@ -4,69 +4,64 @@
 //!
 //! This library provides both blocking and async interfaces for the MCP4725 12-bit DAC.
 
+use embedded_hal::i2c::I2c as I2c_Blocking;
 use embedded_hal::i2c::SevenBitAddress;
+use embedded_hal_async::i2c::I2c as I2c_Async;
 
-pub struct Mcp4725 {
-    address: SevenBitAddress,
-    supply_voltage: f32,
-}
-
-pub trait Dac {
-    fn new(address: SevenBitAddress, supply_voltage: f32) -> Self;
-}
-
-impl Dac for Mcp4725 {
-    fn new(address: SevenBitAddress, supply_voltage: f32) -> Self {
-        Mcp4725 {
-            address,
-            supply_voltage,
-        }
-    }
-}
+pub trait Dac {}
 
 pub trait DacBlocking: Dac {
-    fn set_voltage_blocking<I2C>(&mut self, i2c: &mut I2C, voltage: f32) -> Result<(), I2C::Error>
-    where
-        I2C: embedded_hal::i2c::I2c;
+    type Error;
 
-    fn get_voltage_blocking<I2C>(&mut self, i2c: &mut I2C) -> Result<f32, I2C::Error>
-    where
-        I2C: embedded_hal::i2c::I2c;
+    fn set_voltage_blocking(&mut self, voltage: f32) -> Result<(), Self::Error>;
+    fn get_voltage_blocking(&mut self) -> Result<f32, Self::Error>;
 }
 
 #[allow(async_fn_in_trait)]
 pub trait DacAsync: Dac {
-    async fn set_voltage<I2C>(&mut self, i2c: &mut I2C, voltage: f32) -> Result<(), I2C::Error>
-    where
-        I2C: embedded_hal_async::i2c::I2c;
+    type Error;
 
-    async fn get_voltage<I2C>(&mut self, i2c: &mut I2C) -> Result<f32, I2C::Error>
-    where
-        I2C: embedded_hal_async::i2c::I2c;
+    async fn set_voltage(&mut self, voltage: f32) -> Result<(), Self::Error>;
+    async fn get_voltage(&mut self) -> Result<f32, Self::Error>;
 }
 
-impl DacBlocking for Mcp4725 {
-    fn set_voltage_blocking<I2C>(&mut self, i2c: &mut I2C, voltage: f32) -> Result<(), I2C::Error>
-    where
-        I2C: embedded_hal::i2c::I2c,
-    {
+pub struct Mcp4725<I2C> {
+    address: SevenBitAddress,
+    supply_voltage: f32,
+    i2c: I2C,
+}
+
+impl<I2C> Dac for Mcp4725<I2C> {}
+
+impl<I2C> Mcp4725<I2C> {
+    pub fn new(address: SevenBitAddress, supply_voltage: f32, i2c: I2C) -> Self {
+        Mcp4725 {
+            address,
+            supply_voltage,
+            i2c,
+        }
+    }
+}
+
+impl<I2C: I2c_Async> DacAsync for Mcp4725<I2C> {
+    type Error = I2C::Error;
+
+    async fn set_voltage(&mut self, voltage: f32) -> Result<(), Self::Error> {
         #[cfg(feature = "defmt")]
-        defmt::trace!("Setting voltage: {} V", voltage);
-        let voltage: u16 = ((voltage / self.supply_voltage) * 4095 as f32) as u16;
+        defmt::debug!("Setting voltage: {}", voltage);
+
+        let voltage: u16 = ((voltage / self.supply_voltage) * 4095_f32) as u16;
         let bytes = [(voltage >> 8) as u8, (voltage & 0xFF) as u8];
 
-        i2c.write(self.address, &bytes)
+        self.i2c.write(self.address, &bytes).await
     }
 
-    fn get_voltage_blocking<I2C>(&mut self, i2c: &mut I2C) -> Result<f32, I2C::Error>
-    where
-        I2C: embedded_hal::i2c::I2c,
-    {
+    async fn get_voltage(&mut self) -> Result<f32, Self::Error> {
         let mut bytes = [0; 5];
-        i2c.read(self.address, &mut bytes)?;
+        self.i2c.read(self.address, &mut bytes).await?;
 
         let result: u16 = u16::from_be_bytes([bytes[1], bytes[2]]) >> 4;
-        let result: f32 = (result as f32 / 4085 as f32) * 3.3;
+        let result: f32 = (result as f32 / 4095_f32) * self.supply_voltage;
 
         #[cfg(feature = "defmt")]
         defmt::debug!("Got voltage: {}", result);
@@ -75,33 +70,28 @@ impl DacBlocking for Mcp4725 {
     }
 }
 
-impl DacAsync for Mcp4725 {
-    async fn set_voltage<I2C>(&mut self, i2c: &mut I2C, voltage: f32) -> Result<(), I2C::Error>
-    where
-        I2C: embedded_hal_async::i2c::I2c,
-    {
-        #[cfg(feature = "defmt")]
-        defmt::debug!("Setting voltage: {}", voltage);
+impl<I2C: I2c_Blocking> DacBlocking for Mcp4725<I2C> {
+    type Error = I2C::Error;
 
-        let voltage: u16 = ((voltage / self.supply_voltage) * 4095 as f32) as u16;
+    fn set_voltage_blocking(&mut self, voltage: f32) -> Result<(), Self::Error> {
+        #[cfg(feature = "defmt")]
+        defmt::trace!("Setting voltage: {} V", voltage);
+        let voltage: u16 = ((voltage / self.supply_voltage) * 4095_f32) as u16;
         let bytes = [(voltage >> 8) as u8, (voltage & 0xFF) as u8];
 
-        i2c.write(self.address, &bytes).await
+        self.i2c.write(self.address, &bytes)
     }
 
-    async fn get_voltage<I2C>(&mut self, i2c: &mut I2C) -> Result<f32, I2C::Error>
-    where
-        I2C: embedded_hal_async::i2c::I2c,
-    {
+    fn get_voltage_blocking(&mut self) -> Result<f32, Self::Error> {
         let mut bytes = [0; 5];
-        i2c.read(self.address, &mut bytes).await?;
+        self.i2c.read(self.address, &mut bytes)?;
 
         let result: u16 = u16::from_be_bytes([bytes[1], bytes[2]]) >> 4;
-        let result: f32 = (result as f32 / 4085 as f32) * 3.3;
+        let result: f32 = (result as f32 / 4095_f32) * self.supply_voltage;
 
         #[cfg(feature = "defmt")]
         defmt::debug!("Got voltage: {}", result);
-        
+
         Ok(result)
     }
 }
